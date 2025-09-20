@@ -1,0 +1,213 @@
+# for jupyter notebook - initial setup, ensures correct installations and smooth running
+%matplotlib inline
+
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import statsmodels.api as sm
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+sns.set_style('whitegrid')  # for nice plots
+
+import pandas as pd
+import yfinance as yf
+
+tickers = ['AAPL','MSFT','GOOGL','AMZN','TSLA']
+
+# historical data download
+data = yf.download(
+    tickers,
+    start='2020-01-01',
+    end='2025-01-01',
+    group_by='ticker',
+    auto_adjust=False  # ensures 'Adj Close' exists
+)
+
+# flatten adjusted close prices
+prices = pd.DataFrame()
+for ticker in tickers:
+    if 'Adj Close' in data[ticker].columns:
+        prices[ticker] = data[ticker]['Adj Close']
+    else:
+        # fallback to Close if Adj Close missing
+        prices[ticker] = data[ticker]['Close']
+
+prices.fillna(method='ffill', inplace=True)
+returns = prices.pct_change().dropna()
+
+prices.head()
+
+# fama french factor modelling: MKT, SMB, HML, RMW, CMA, MOM
+factor_names = ['MKT','SMB','HML','RMW','CMA','MOM']
+np.random.seed(42)
+
+# simulation of factor returns 
+factor_returns = pd.DataFrame(
+    np.random.normal(0, 0.01, (len(returns), len(factor_names))),
+    index=returns.index,
+    columns=factor_names
+)
+
+# simulation of factor loadings per stock
+factor_loadings = pd.DataFrame(
+    np.random.normal(0,1,(len(tickers), len(factor_names))),
+    index=tickers,
+    columns=factor_names
+)
+
+factor_returns.head(), factor_loadings.head()
+
+# signalling momentum
+lookback = 126  # 6-month return
+momentum_signal = (prices.pct_change(periods=lookback) > 0).astype(int)
+momentum_signal = momentum_signal.replace(0, -1)  # -1 = sell
+
+# factor overlay - with z score weights
+factor_zscores = (factor_loadings - factor_loadings.mean()) / factor_loadings.std()
+factor_overlay = factor_zscores.dot(np.array([0.5,0.3,0.1,0.05,0.05,0.0]))
+factor_overlay = factor_overlay / factor_overlay.abs().max()
+signals = momentum_signal.multiply(factor_overlay, axis=1)
+
+# algo signalling (pos or neg)
+signals = signals.applymap(lambda x: 1 if x>0 else -1)
+
+signals.head()
+
+def backtest_portfolio(prices, signals, rebalance_period=21):
+    daily_returns = prices.pct_change().dropna()
+    portfolio_returns = pd.Series(index=daily_returns.index)
+    weights_history = pd.DataFrame(index=daily_returns.index, columns=prices.columns)
+    
+    for t in range(0, len(daily_returns), rebalance_period):
+        date = daily_returns.index[t]
+        signal_slice = signals.loc[date]
+        n_long = (signal_slice>0).sum()
+        n_short = (signal_slice<0).sum()
+        weights = signal_slice.copy()*0
+        
+        if n_long>0:
+            weights[signal_slice>0] = 1/n_long
+        if n_short>0:
+            weights[signal_slice<0] = -1/n_short
+        
+        end_idx = min(t+rebalance_period, len(daily_returns))
+        for i in range(t, end_idx):
+            curr_date = daily_returns.index[i]
+            portfolio_returns[curr_date] = (daily_returns.loc[curr_date]*weights).sum()
+            weights_history.loc[curr_date] = weights
+    cumulative_returns = (1 + portfolio_returns).cumprod()
+    return portfolio_returns, cumulative_returns, weights_history
+
+portfolio_returns, cumulative_returns, weights_history = backtest_portfolio(prices, signals)
+
+# time to plot cumulative returns w this
+plt.figure(figsize=(12,6))
+plt.plot(cumulative_returns.index, cumulative_returns.values, label='Backtested Portfolio', color='blue')
+plt.title('Portfolio Cumulative Returns')
+plt.xlabel('Date')
+plt.ylabel('Cumulative Return')
+plt.legend()
+plt.show()
+
+#rolling sharpe ratio calc and plots 
+
+rolling_window = 126
+rolling_mean = portfolio_returns.rolling(rolling_window).mean()
+rolling_std = portfolio_returns.rolling(rolling_window).std()
+rolling_sharpe = rolling_mean / rolling_std
+drawdown = cumulative_returns / cumulative_returns.cummax() - 1
+
+def cvar(series, alpha=0.05):
+    return series[series<=series.quantile(alpha)].mean()
+portfolio_cvar = cvar(portfolio_returns)
+
+plt.figure(figsize=(12,6))
+plt.plot(rolling_sharpe, label='Rolling Sharpe (6M)', color='green')
+plt.title('Rolling Sharpe Ratio')
+plt.xlabel('Date')
+plt.ylabel('Sharpe')
+plt.legend()
+plt.show()
+
+plt.figure(figsize=(12,6))
+plt.plot(drawdown, label='Drawdown', color='red')
+plt.title('Portfolio Drawdown')
+plt.xlabel('Date')
+plt.ylabel('Drawdown')
+plt.legend()
+plt.show()
+
+X = sm.add_constant(factor_returns)
+model = sm.OLS(portfolio_returns, X).fit(cov_type='HAC', cov_kwds={'maxlags':5})
+factor_alpha = model.params[0]
+factor_alpha_se = model.bse[0]
+
+print(f"Factor-Adjusted Alpha: {factor_alpha:.6f} ± {factor_alpha_se:.6f}")
+
+def generate_random_weights(n_stocks, n_portfolios):
+    return np.random.dirichlet(np.ones(n_stocks), size=n_portfolios)
+
+def evaluate_random_portfolios(returns, factor_loadings, factor_returns, n_portfolios=500):
+    results = []
+    weights_matrix = generate_random_weights(len(returns.columns), n_portfolios)
+    for i, w in enumerate(weights_matrix):
+        port_ret = returns.dot(w)
+        cum_ret = (1 + port_ret).prod() - 1
+        ann_ret = port_ret.mean()*252
+        ann_vol = port_ret.std()*np.sqrt(252)
+        sharpe = ann_ret/ann_vol if ann_vol>0 else np.nan
+        port_beta = w.dot(factor_loadings)
+        X = sm.add_constant(factor_returns)
+        model = sm.OLS(port_ret, X).fit(cov_type='HAC', cov_kwds={'maxlags':5})
+        alpha = model.params[0]
+        results.append({
+            'Portfolio_ID': i+1,
+            'Weights': w,
+            'Cumulative_Return': cum_ret,
+            'Annualized_Return': ann_ret,
+            'Annualized_Vol': ann_vol,
+            'Sharpe': sharpe,
+            'Factor_Alpha': alpha,
+            'Factor_Exposure': port_beta
+        })
+    return pd.DataFrame(results)
+
+mc_portfolios = evaluate_random_portfolios(returns, factor_loadings, factor_returns, n_portfolios=500)
+
+plt.figure(figsize=(10,6))
+plt.scatter(mc_portfolios['Annualized_Vol'], mc_portfolios['Annualized_Return'],
+            c=mc_portfolios['Factor_Alpha'], cmap='viridis', alpha=0.6)
+plt.colorbar(label='Factor-Adjusted Alpha')
+plt.xlabel('Annualized Volatility')
+plt.ylabel('Annualized Return')
+plt.title('Monte Carlo Random Portfolios')
+plt.show()
+
+#EXCEL EXPORTATION 
+
+with pd.ExcelWriter('full_quant_backtest.xlsx', engine='xlsxwriter') as writer:
+    prices.to_excel(writer, sheet_name='Prices')
+    portfolio_returns.to_frame('Daily_Returns').to_excel(writer, sheet_name='Portfolio_Returns')
+    cumulative_returns.to_frame('Cumulative_Returns').to_excel(writer, sheet_name='Cumulative_Returns')
+    weights_history.to_excel(writer, sheet_name='Weights_History')
+    mc_portfolios.to_excel(writer, sheet_name='Random_Portfolios', index=False)
+    factor_loadings.to_excel(writer, sheet_name='Factor_Loadings')
+    factor_returns.to_excel(writer, sheet_name='Factor_Returns')
+
+print("Export of full backtest results to 'full_quant_backtest.xlsx'.")
+
+summary = {
+    'Portfolio_Cumulative_Return': cumulative_returns[-1],
+    'Annualized_Return': portfolio_returns.mean()*252,
+    'Annualized_Volatility': portfolio_returns.std()*np.sqrt(252),
+    'Sharpe_Ratio': (portfolio_returns.mean()*252)/(portfolio_returns.std()*np.sqrt(252)),
+    'Max_Drawdown': drawdown.min(),
+    'CVaR_5%': portfolio_cvar,
+    'Factor_Alpha': factor_alpha,
+    'Factor_Alpha_SE': factor_alpha_se
+}
+
+print("Portfolio Summary Metrics:")
+for k,v in summary.items():
+    print(f"{k}: {v:.4f}")
