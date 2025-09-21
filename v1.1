@@ -1,0 +1,114 @@
+# start with importing all packages / installations needed
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import plotly.express as px
+
+# here, can customise fo portfolio - by using tickers. example portfolio an weighting - aapl,msft,googl,amzn,tsa
+# here, can also change date - from all historic, to latest live.
+tickers = ['AAPL','MSFT','GOOGL','AMZN','TSLA']
+benchmark_ticker = "^GSPC"
+start_date = "2020-01-01"
+end_date = "2025-01-01"
+rebalance_period = 21
+momentum_lookback = 126
+rolling_window = 126
+np.random.seed(42)
+
+# download of prices
+data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=False, group_by='ticker')
+prices = pd.DataFrame()
+for t in tickers:
+    if 'Adj Close' in data[t].columns:
+        prices[t] = data[t]['Adj Close']
+    else:
+        prices[t] = data[t]['Close']
+prices.fillna(method='ffill', inplace=True)
+
+# for benchmark 0 can be customised here
+bm_data = yf.download(benchmark_ticker, start=start_date, end=end_date, auto_adjust=False)
+benchmark = bm_data['Adj Close'] if 'Adj Close' in bm_data else bm_data['Close']
+benchmark = benchmark.reindex(prices.index).ffill()
+
+# returns
+returns = prices.pct_change().dropna()
+bm_returns = benchmark.pct_change().dropna()
+
+# momentum signal
+momentum_signal = (prices.pct_change(periods=momentum_lookback) > 0).astype(int)
+momentum_signal = momentum_signal.replace(0, -1)
+
+# portfolio weighting
+weights = pd.DataFrame(0, index=returns.index, columns=returns.columns)
+for i in range(0, len(returns), rebalance_period):
+    date = returns.index[i]
+    signal_slice = momentum_signal.loc[date]
+    n_long = (signal_slice > 0).sum()
+    n_short = (signal_slice < 0).sum()
+    w = signal_slice.copy() * 0
+    if n_long > 0: w[signal_slice > 0] = 1 / n_long
+    if n_short > 0: w[signal_slice < 0] = -1 / n_short
+    end_idx = min(i + rebalance_period, len(returns))
+    for j in range(i, end_idx):
+        weights.iloc[j] = w
+
+# strategy (i..e stocks entered) returns
+strategy_returns = (weights.shift(1) * returns).sum(axis=1)
+
+# ensures same start of strategy and benchmark 
+aligned_index = strategy_returns.index.intersection(bm_returns.index)
+strategy_aligned = strategy_returns.loc[aligned_index]
+benchmark_aligned = bm_returns.loc[aligned_index]
+
+# cumulative returns 
+cumulative = (1 + strategy_aligned).cumprod()
+benchmark_cum = (1 + benchmark_aligned).cumprod()
+
+# normalise start at 1
+cumulative /= cumulative.iloc[0]
+benchmark_cum /= benchmark_cum.iloc[0]
+
+# for rolling sharpe
+rolling_sharpe = (strategy_aligned.rolling(rolling_window).mean() /
+                  strategy_aligned.rolling(rolling_window).std()) * np.sqrt(252)
+drawdown = cumulative / cumulative.cummax() - 1
+
+# interactive plotly dashboard - in jupyter
+# ensure all plots are 1d
+cumulative = cumulative.squeeze()        # converts (n,1) DataFrame to Series
+benchmark_cum = benchmark_cum.squeeze()
+rolling_sharpe = rolling_sharpe.squeeze()
+drawdown = drawdown.squeeze()
+
+# for plotly dataframes
+cum_df = pd.DataFrame({"Strategy": cumulative, "Benchmark": benchmark_cum})
+sharpe_df = pd.DataFrame({"Rolling Sharpe": rolling_sharpe})
+drawdown_df = pd.DataFrame({"Drawdown": drawdown})
+
+# for cumulative returns - easy comparison for growth potential
+cum_df = pd.DataFrame({"Strategy": cumulative, "Benchmark": benchmark_cum})
+fig_cum = px.line(cum_df, title="Cumulative Returns", labels={"index":"Date", "value":"Cumulative Return"})
+fig_cum.show()
+
+# rolling sharpe calc
+sharpe_df = pd.DataFrame({"Rolling Sharpe": rolling_sharpe})
+fig_sharpe = px.line(sharpe_df, title="Rolling Sharpe (6M)", labels={"index":"Date", "value":"Sharpe Ratio"})
+fig_sharpe.show()
+
+# drawdowns calc
+drawdown_df = pd.DataFrame({"Drawdown": drawdown})
+fig_dd = px.line(drawdown_df, title="Drawdown", labels={"index":"Date", "value":"Drawdown"})
+fig_dd.show()
+
+# summary metrics
+summary = {
+    "Strategy Cumulative": cumulative.iloc[-1],
+    "Benchmark Cumulative": benchmark_cum.iloc[-1],
+    "Strategy Annualized Return": strategy_aligned.mean() * 252,
+    "Strategy Annualized Vol": strategy_aligned.std() * np.sqrt(252),
+    "Strategy Sharpe": (strategy_aligned.mean()/strategy_aligned.std()) * np.sqrt(252),
+    "Max Drawdown": drawdown.min()
+}
+
+summary_df = pd.DataFrame(summary, index=[0])
+summary_df
