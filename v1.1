@@ -112,3 +112,17 @@ summary = {
 
 summary_df = pd.DataFrame(summary, index=[0])
 summary_df
+
+# for excel files of adi data
+
+with pd.ExcelWriter("equity_strategy_backtest.xlsx", engine="xlsxwriter") as writer:
+    prices.to_excel(writer, sheet_name="Prices")
+    returns.to_excel(writer, sheet_name="Daily_Returns")
+    strategy_aligned.to_frame("Strategy_Returns").to_excel(writer, sheet_name="Strategy_Returns")  # series -> df
+    # bm_returns is already a DataFrame, so export directly
+    bm_returns.to_excel(writer, sheet_name="Benchmark_Returns")
+    cumulative.to_frame("Cumulative").to_excel(writer, sheet_name="Cumulative")
+    benchmark_cum.to_frame("Benchmark_Cumulative").to_excel(writer, sheet_name="Benchmark_Cumulative")
+    rolling_sharpe.to_frame("Rolling_Sharpe").to_excel(writer, sheet_name="Rolling_Sharpe")
+    drawdown.to_frame("Drawdown").to_excel(writer, sheet_name="Drawdown")
+    summary_df.to_excel(writer, sheet_name="Summary", index=False)
