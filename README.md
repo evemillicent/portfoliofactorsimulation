@@ -1,14 +1,8 @@
-v1 -Here, I implement algorthimic and statistical methods in a simple portfolio performance simulation.
+v1 - here, I backtest and simulate a simple algorthimic portfolio strategy with statistical methods
 
  aims:
-- simulates performance and overall results of stocks (from start to live, present day) of any defined portfolio / benchmark of choice.
-- produces backlogs in excel format, and factor regression results for statisticl and factor investing inference / pratical insights
+- simulates stocks performance (from start to present day) of a customisable portfolio / benchmark 
+- produces backlogged data in excel format, as well as factor regression results for statistical and factor investing inference / pratical insights
 - produces visuals, rolling regressions and short term windows to test for mean reversion 
-- optimises portfolio weightings into most efficient for each defined period 
+- optimises portfolio weightings into best performing based on drawdowns for each period 
 
-
-v2 
-- aims to create dashboard and graphical results, readily exported into excel for further analysis / quality check
-- double checks against other historical data sources - aside from yfinance
-- supports custom, excel report uploads in defined structure
-- gives key statistics for risk
